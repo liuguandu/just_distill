@@ -19,6 +19,7 @@ import torch
 import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
+from datasets.voc_eval import do_voc_evaluation, gather_multiple_gpus
 from datasets.data_prefetcher import data_prefetcher
 
 
@@ -80,17 +81,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, dataset):
     model.eval()
     criterion.eval()
-
+    all_prediction = {}
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Test:'
 
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
-    coco_evaluator = CocoEvaluator(base_ds, iou_types)
-    # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
+    coco_evaluator = CocoEvaluator(base_ds, iou_types, output_dir)
+    # coco_evaluator = None
+    voc_eval = False
+    # # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
 
     panoptic_evaluator = None
     if 'panoptic' in postprocessors.keys():
@@ -127,7 +130,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
         if coco_evaluator is not None:
             coco_evaluator.update(res)
-
+        if voc_eval == True:
+            all_prediction.update(res)
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
             for i, target in enumerate(targets):
@@ -139,10 +143,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             panoptic_evaluator.update(res_pano)
 
     # gather the stats from all processes
+    merge_pre = {}
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     if coco_evaluator is not None:
         coco_evaluator.synchronize_between_processes()
+    if voc_eval == True:
+        merge_pre = gather_multiple_gpus(all_prediction)
     if panoptic_evaluator is not None:
         panoptic_evaluator.synchronize_between_processes()
 
@@ -151,6 +158,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
     panoptic_res = None
+    if voc_eval == True:
+        do_voc_evaluation(dataset, merge_pre, 'voc_output', metric_logger)
     if panoptic_evaluator is not None:
         panoptic_res = panoptic_evaluator.summarize()
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}

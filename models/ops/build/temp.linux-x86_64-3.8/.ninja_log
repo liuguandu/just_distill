@@ -1,0 +1,10 @@
+# ninja log v5
+53	10163	1656668428942618477	/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/src/cpu/ms_deform_attn_cpu.o	d449f7d0ee3f5acb
+0	23123	1656668441898618128	/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/src/vision.o	54f7735c5b294dea
+55	77813	1656668496541616655	/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lifelongdetr/Deformable-DETR/models/ops/src/cuda/ms_deform_attn_cuda.o	6a53a0462bbd4ae7
+22	8014	1657094367443142429	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/cpu/ms_deform_attn_cpu.o	9fa6665f6d5ece4e
+0	20297	1657094379724142098	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/vision.o	833c837f81b80026
+23	75382	1657094434761140615	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/cuda/ms_deform_attn_cuda.o	480267b4005db37
+0	7258	1657158723329777412	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/cpu/ms_deform_attn_cpu.o	9fa6665f6d5ece4e
+0	23121	1657158739185776985	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/vision.o	833c837f81b80026
+1	86619	1657158802641775275	/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/build/temp.linux-x86_64-3.8/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/models/ops/src/cuda/ms_deform_attn_cuda.o	480267b4005db37
