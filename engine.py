@@ -21,12 +21,15 @@ from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.voc_eval import do_voc_evaluation, gather_multiple_gpus
 from datasets.data_prefetcher import data_prefetcher
+from collections import OrderedDict
 
-
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
+def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, 
+                    student_model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
     model.train()
+    teacher_model.eval()
+    student_model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -40,8 +43,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
-        outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        with torch.no_grad():
+            teacher_outputs, teacher_unact = teacher_model(samples, None)
+        old_student_outputs, _ = model(samples, teacher_unact)
+        new_student_outputs, _ = student_model(samples, None)
+        # outputs = model(samples)
+        loss_dict = criterion(new_student_outputs, targets, old_student_outputs, teacher_outputs)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
@@ -74,12 +81,25 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(grad_norm=grad_total_norm)
 
         samples, targets = prefetcher.next()
+        new_model_dict = update_model(model, student_model)
+        model.load_state_dict(new_model_dict)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-
+def update_model(model, student_model):
+    model_dict = model.state_dict()
+    new_model_dict = OrderedDict()
+    for key, value in student_model.state_dict().items():
+        if key in model_dict.keys():
+            new_model_dict[key] = (
+                model_dict[key] * 
+                (1 - 0.5) + value * 0.5
+            )
+        else:
+            raise Exception("{} is not found in student model".format(key))
+    return new_model_dict
 @torch.no_grad()
 def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, dataset):
     model.eval()
@@ -107,7 +127,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
+        outputs, _ = model(samples, None)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 

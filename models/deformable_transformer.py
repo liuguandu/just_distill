@@ -123,7 +123,7 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, teacher_unact=None):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -163,10 +163,18 @@ class DeformableTransformer(nn.Module):
 
             topk = self.two_stage_num_proposals
             topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_coords_unact = topk_coords_unact.detach()
-            reference_points = topk_coords_unact.sigmoid()
-            init_reference_out = reference_points
+            if teacher_unact != None:
+                teacher_coords_unact = teacher_unact
+                topk_coords_unact = teacher_unact.detach()
+                reference_points = topk_coords_unact.sigmoid()
+                init_reference_out = reference_points
+            else:
+                
+                topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+                teacher_coords_unact = topk_coords_unact
+                topk_coords_unact = topk_coords_unact.detach()
+                reference_points = topk_coords_unact.sigmoid()
+                init_reference_out = reference_points
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
@@ -182,8 +190,8 @@ class DeformableTransformer(nn.Module):
 
         inter_references_out = inter_references
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs, init_reference_out, inter_references_out, None, None
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, teacher_coords_unact
+        return hs, init_reference_out, inter_references_out, None, None, None
 
 
 class DeformableTransformerEncoderLayer(nn.Module):

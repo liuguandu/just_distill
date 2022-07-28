@@ -111,7 +111,7 @@ class DeformableDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, teacher_unact=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -154,7 +154,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, teacher_coords_unact = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
         outputs_coords = []
@@ -184,7 +184,7 @@ class DeformableDETR(nn.Module):
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-        return out
+        return out, teacher_coords_unact
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -216,7 +216,27 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
-
+    def loss_distill(self, outputs, targets, indices, num_boxes):
+        src_logits = outputs['pred_logits']
+        src_boxes = outputs['pred_boxes']
+        tgt_logits = targets['pred_logits']
+        idx = self._get_src_permutation_idx(indices)
+        src_logits = src_logits[idx]
+        src_boxes = src_boxes[idx]
+        tgt_logits = tgt_logits.reshape(-1, tgt_logits.size(-1)).detach()
+        tgt_boxes = targets['pred_boxes'].reshape(-1, targets['pred_boxes'].size(-1)).detach()
+        num_boxes = tgt_boxes.size(0)
+        tgt_id = tgt_logits.softmax(dim=-1).max(-1)[1]
+        kl = F.cross_entropy(src_logits, tgt_id, reduction='sum') / src_logits.shape[0]
+        kl_boxes = F.l1_loss(src_boxes, tgt_boxes, reduction='none')
+        kl_boxes = kl_boxes.sum() / num_boxes
+        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
+            box_ops.box_cxcywh_to_xyxy(src_boxes),
+            box_ops.box_cxcywh_to_xyxy(tgt_boxes)))
+        losses = {'loss_distill': kl}
+        losses['loss_distill_boxes'] = kl_boxes / 2
+        losses['loss_distill_giou'] = loss_giou.sum() / num_boxes
+        return losses
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
@@ -324,18 +344,20 @@ class SetCriterion(nn.Module):
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
-            'masks': self.loss_masks
+            'masks': self.loss_masks,
+            'distill': self.loss_distill
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, old_student_outputs=None, teacher_outputs=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
+        # print('outputs_without_aux:', outputs_without_aux)
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -348,15 +370,37 @@ class SetCriterion(nn.Module):
             torch.distributed.all_reduce(num_boxes)
         num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
 
+        if teacher_outputs != None and old_student_outputs != None:
+            old_student_wo_aux = {k: v for k, v in old_student_outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+            org_teacher_outputs = copy.deepcopy(teacher_outputs)
+            pred = teacher_outputs['pred_logits']
+            pred = pred.sigmoid().max(-1)[0]
+            topk_index = torch.topk(pred, 50, 1)[1]
+            topk_score = torch.topk(pred, 50, 1)[0]
+            mask = topk_score > 0.5
+            teacher_outputs['pred_logits'] = torch.gather(teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 20))
+            teacher_outputs['pred_boxes'] = torch.gather(teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+            teacher_outputs['pred_logits'][mask]
+            teacher_outputs['pred_boxes'][mask]
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
             kwargs = {}
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
+            if loss == 'distill':
+                if teacher_outputs != None and old_student_outputs != None:
+                    dis_indices = self.matcher(old_student_wo_aux, teacher_outputs, True)
+                    losses.update(self.get_loss(loss, old_student_outputs, teacher_outputs, dis_indices, num_boxes, **kwargs))
+                else:
+                    continue
+            else:
+                losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
+                if teacher_outputs != None and old_student_outputs != None:
+                    old_aux_outputs = old_student_outputs['aux_outputs'][i]
+                    dis_indices = self.matcher(old_aux_outputs, teacher_outputs, True)
                 indices = self.matcher(aux_outputs, targets)
                 for loss in self.losses:
                     if loss == 'masks':
@@ -366,7 +410,13 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    if loss == 'distill':
+                        if teacher_outputs != None and old_student_outputs != None:
+                            l_dict = self.get_loss(loss, old_aux_outputs, teacher_outputs, dis_indices, num_boxes, **kwargs) 
+                        else:
+                            continue
+                    else:
+                        l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -384,6 +434,8 @@ class SetCriterion(nn.Module):
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
+                if loss == 'distill':
+                    continue
                 l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
@@ -478,7 +530,7 @@ def build(args):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ['labels', 'boxes', 'cardinality']
+    losses = ['labels', 'boxes', 'cardinality', 'distill']
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
