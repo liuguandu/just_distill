@@ -41,6 +41,8 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        with torch.no_grad():
+            teacher_output = teacher_model(samples)
         outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict

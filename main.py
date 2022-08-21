@@ -35,7 +35,7 @@ def get_args_parser():
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
     parser.add_argument('--batch_size', default=2, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--epochs', default=150, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
@@ -120,7 +120,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
-    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
+    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10_21/checkpoint0099.pth', help='resume from checkpoint')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
@@ -267,9 +267,10 @@ def main(args):
             #     and n != de_atten + 'output_proj.weight' and n != de_atten + 'output_proj.bias' \
             #     and n != de_atten_2 + 'in_proj_weight' and n != de_atten_2 + 'in_proj_bias' \
             #     and n != de_atten_2 + 'out_proj.weight' and n != de_atten_2 + 'out_proj.bias':
-        if n not in r_list:
-            print(n)
-            p.requires_grad = False
+        # if n not in r_list:
+        #     print(n)
+        #     p.requires_grad = False
+        print(n)
     param_dicts = [
         {
             "params":
