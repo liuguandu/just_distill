@@ -149,7 +149,11 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
+    teacher_model, _, _ = build_model(args)
+    teacher_model.to(device)
+
     model_without_ddp = model
+    teacher_without_ddp = teacher_model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
@@ -189,53 +193,55 @@ def main(args):
     delayer = 'transformer.decoder.layers'
     org_list = []
     r_list = []
-    for n, p in model_without_ddp.named_parameters():
-        if p.requires_grad == True:
-            org_list.append(n)
-        for i in range(6):
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.bias')
-            r_list.append('transformer.decoder.class_embed.'+str(i)+'.weight')
-            r_list.append('transformer.decoder.class_embed.'+str(i)+'.bias')     
-    print('not in')
+    # for n, p in model_without_ddp.named_parameters():
+    #     if p.requires_grad == True:
+    #         org_list.append(n)
+    #     for i in range(6):
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.bias')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.weight')
+    #         r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.bias')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.weight')
+    #         r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.bias')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.weight')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.bias')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.weight')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.bias')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.weight')
+    #         r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.bias')
+    #         r_list.append('transformer.decoder.class_embed.'+str(i)+'.weight')
+    #         r_list.append('transformer.decoder.class_embed.'+str(i)+'.bias')     
+    # print('not in')
+
+
     for n, p in model_without_ddp.named_parameters():
         # print(n)
         # rlist = ['transformer.decoder.layers.'+ str(5) + '.self_attn.out_proj.weight', 'transformer.decoder.layers.' + str(5) + '.self_attn.in_proj_weight']
@@ -292,6 +298,8 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu])
+        teacher_model_without_ddp = teacher_model.module
     # base_ds = None
     if args.dataset_file == "coco_panoptic":
         # We also evaluate AP during panoptic training, on original coco DS
@@ -303,6 +311,7 @@ def main(args):
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
+        teacher_model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -315,7 +324,7 @@ def main(args):
         # for n, p in checkpoint['model'].named_parameters:
         #     print(n)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-
+        _, _  = teacher_model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
@@ -359,7 +368,7 @@ def main(args):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            model, teacher_model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']

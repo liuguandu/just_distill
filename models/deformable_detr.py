@@ -329,13 +329,33 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, teacher_output=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
+        if teacher_output != None:
+            outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+            pred = teacher_output['pred_logits']
+            pred = pred.softmax(-1).max(-1)[0]
+            topk_index = torch.topk(pred, 10, 1)[1]
+            topk_score = torch.topk(pred, 10, 1)[0]
+            mask = topk_score > 0.7
+            teacher_output['pred_logits'] = torch.gather(teacher_output['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
+            teacher_output['pred_boxes'] = torch.gather(teacher_output['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+            logit_list = []
+            boxes_list = []
+            for i in range(len(mask)):
+                tgt_id = F.softmax(teacher_output['pred_logits'][i][mask[i]], -1).max(-1)[1]
+                logit_list.append(tgt_id)
+                boxes_list.append(teacher_output['pred_boxes'][i][mask[i]])
+        if teacher_output != None and teacher_output['pred_logits'].size(1) > 0:
+            for i in range(len(logit_list)):
+                if len(targets[i]['labels']) > 0:
+                    targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
+                    targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -444,7 +464,7 @@ class MLP(nn.Module):
 
 def build(args):
     # num_classes = 20 if args.dataset_file != 'coco' else 91
-    num_classes = 20
+    num_classes = 21
     if args.dataset_file == "coco_panoptic":
         num_classes = 250
     device = torch.device(args.device)

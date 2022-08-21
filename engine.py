@@ -23,10 +23,11 @@ from datasets.voc_eval import do_voc_evaluation, gather_multiple_gpus
 from datasets.data_prefetcher import data_prefetcher
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
+def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
     model.train()
+    teacher_model.eval()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
