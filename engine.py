@@ -44,7 +44,7 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
         with torch.no_grad():
             teacher_output = teacher_model(samples)
         outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        loss_dict = criterion(outputs, targets, teacher_output)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
