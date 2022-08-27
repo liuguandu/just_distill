@@ -111,7 +111,7 @@ class DeformableDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, teacher_points=None, teacher_unact=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -154,7 +154,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, teacher_coords_unact = self.transformer(srcs, masks, pos, query_embeds, teacher_points, teacher_unact)
 
         outputs_classes = []
         outputs_coords = []
@@ -184,7 +184,7 @@ class DeformableDETR(nn.Module):
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-        return out
+        return out, teacher_coords_unact, topk_proposals
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -216,7 +216,47 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
+    def loss_distill(self, outputs, targets, indices, num_boxes):
+        src_logits = outputs['pred_logits']
+        src_boxes = outputs['pred_boxes']
+        # print(targets)
+        if targets['pred_logits'].size(-1) == 1:
+            tgt_logits = torch.zeros(src_logits.size(), device=src_logits.device)
+            tgt_logits[:, :, 0] += 1
+        else:
+            tgt_logits = targets['pred_logits']
+        
+        if indices != 1:
+            idx = self._get_src_permutation_idx(indices)
+            src_logits = src_logits[idx]
+            src_boxes = src_boxes[idx]
+        else:
+            src_logits = src_logits.reshape(-1, src_logits.size(-1))
+            src_boxes = src_boxes.reshape(-1, src_boxes.size(-1))
+        tgt_logits = tgt_logits.reshape(-1, tgt_logits.size(-1)).detach()
+        tgt_boxes = targets['pred_boxes'].reshape(-1, targets['pred_boxes'].size(-1)).detach()
+        num_boxes = tgt_boxes.size(0)
+        # print('src_logits:', outputs['pred_logits'].size(), 'tgt_logits:', targets['pred_logits'].size())
+        tgt_id = tgt_logits.softmax(dim=-1).max(-1)[1]
+        # tgt_onehot = torch.zeros(tgt_logits.size(), dtype=src_logits.dtype, device=src_logits.device)
+        # tgt_onehot.scatter_(2, tgt_id.unsqueeze(-1), 1)
 
+        # kl = F.kl_div(src_logits.softmax(dim=-1).log(), tgt_logits.softmax(dim=-1), reduction='sum')
+        kl = F.cross_entropy(src_logits, tgt_id, reduction='sum') / src_logits.shape[0]
+        kl_boxes = F.l1_loss(src_boxes, tgt_boxes, reduction='none')
+        kl_boxes = kl_boxes.sum() / num_boxes
+        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
+            box_ops.box_cxcywh_to_xyxy(src_boxes),
+            box_ops.box_cxcywh_to_xyxy(tgt_boxes)))
+        
+        # print('src_logits:', src_logits.size())
+        if indices != 1:
+            losses = {'loss_distill': kl}
+        else:
+            losses = {'loss_distill': kl}
+        losses['loss_distill_boxes'] = kl_boxes / 2
+        losses['loss_distill_giou'] = loss_giou.sum() / num_boxes / 2
+        return losses
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
@@ -256,7 +296,7 @@ class SetCriterion(nn.Module):
         card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
         losses = {'cardinality_error': card_err}
         return losses
-
+    # def loss_distill_boxes(self, outputs, targets, indices)
     def loss_boxes(self, outputs, targets, indices, num_boxes):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
@@ -324,40 +364,100 @@ class SetCriterion(nn.Module):
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
-            'masks': self.loss_masks
+            'masks': self.loss_masks,
+            'distill': self.loss_distill
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, old_student_outputs=None, old_teacher_outputs=None, teacher_points=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+        logit_list = []
+        boxes_list = []
+        old_target = []
+        # print('targets:', targets)
+        if old_teacher_outputs != None and old_student_outputs != None:
+            old_student_wo_aux = {k: v for k, v in old_student_outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+            org_teacher_outputs = copy.deepcopy(old_teacher_outputs)
+            pred = old_teacher_outputs['pred_logits']
+            pred = pred.softmax(-1).max(-1)[0]
+            # print('old_teacher_outputs1:', old_teacher_outputs['pred_logits'].size(), 'pred:', pred.size())
+            topk_index = torch.topk(pred, 10, 1)[1]
+            # print('topk_index:', topk_index.size())
+            topk_score = torch.topk(pred, 10, 1)[0]
+            mask = (topk_score > 0.7)
+            old_teacher_outputs['pred_logits'] = torch.gather(old_teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
+            old_teacher_outputs['pred_boxes'] = torch.gather(old_teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+            for i in range(len(mask)):
+                tgt_id = F.softmax(old_teacher_outputs['pred_logits'][i][mask[i]], -1).max(-1)[1]
+                logit_list.append(tgt_id)
+                boxes_list.append(old_teacher_outputs['pred_boxes'][i][mask[i]])
+            # old_teacher_outputs['pred_logits'] = old_teacher_outputs['pred_logits'][mask]
+            # old_teacher_outputs['pred_boxes'] = old_teacher_outputs['pred_boxes'][mask]
+        if old_teacher_outputs != None and old_teacher_outputs['pred_logits'].size(1) > 0:
+            # tgt_id = F.softmax(old_teacher_outputs['pred_logits'], -1).max(-1)[1]
+            # print('old_teacher_outputs:', old_teacher_outputs['pred_logits'].size(), 'tgt_id:', tgt_id.size())
+            for i in range(len(logit_list)):
+                # if len(targets[i]['labels']) > 0:
+                #     targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
+                #     targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
+                old_target.append({'labels': logit_list[i]})
+                old_target[i]['boxes'] = boxes_list[i]
+                
 
+        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+        if old_teacher_outputs != None and old_student_outputs != None:
+            old_outputs_without_aux = {k: v for k, v in old_student_outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+            old_indices = self.matcher(old_outputs_without_aux, old_target)
+            old_num_boxes = sum(len(t["labels"]) for t in old_target)
+            old_num_boxes = torch.as_tensor([old_num_boxes], dtype=torch.float, device=next(iter(old_student_outputs.values())).device)
+            if is_dist_avail_and_initialized():
+                torch.distributed.all_reduce(old_num_boxes)
+            old_num_boxes = torch.clamp(old_num_boxes / get_world_size(), min=1).item()
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
-
+        
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_boxes)
         num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
-
+        
+        
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
             kwargs = {}
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
-
+            if loss == 'distill':
+                # if old_teacher_outputs != None and old_student_outputs != None:
+                # # print('old_teacher_outputs:', old_teacher_outputs['pred_logits'].size())
+                #     dis_indices = self.matcher(old_student_wo_aux, old_teacher_outputs, True)
+                #     # print('old_student_outputs:', old_student_outputs['pred_logits'].size(), 'old_teacher_outputs:', old_teacher_outputs['pred_logits'].size())
+                #     losses.update(self.get_loss(loss, old_student_outputs, old_teacher_outputs, dis_indices, num_boxes, **kwargs))
+                # else:
+                # continue
+                if old_teacher_outputs != None and old_student_outputs != None:
+                    mid_loss = self.get_loss('labels', old_student_outputs, old_target, old_indices, old_num_boxes, **kwargs)
+                    mid_loss['loss_ce'] = mid_loss['loss_ce'] * 0.2
+                    losses.update(mid_loss)
+            else:
+                losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
+        # print('mid_losses')
+        # print(losses)
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                if old_teacher_outputs != None and old_student_outputs != None:
+                    old_aux_outputs = old_student_outputs['aux_outputs'][i]
+                    old_indices = self.matcher(old_aux_outputs, old_target) 
+                indices = self.matcher(aux_outputs, targets)   
+                # old_aux_outputs = old_student_outputs['aux_outputs'][i]         
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -366,17 +466,38 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    if loss == 'distill':
+                        # if old_teacher_outputs != None and old_student_outputs != None:
+                        #     # print('old_aux_outputs:', old_aux_outputs['pred_logits'].size(), 'old_teacher_outputs:', old_teacher_outputs['pred_logits'].size())
+                        #     l_dict = self.get_loss(loss, old_aux_outputs, old_teacher_outputs, dis_indices, num_boxes, **kwargs) 
+                        # else:
+                        # continue
+                        if old_teacher_outputs != None and old_student_outputs != None:
+                            l_dict = self.get_loss('labels', old_aux_outputs, old_target, old_indices, old_num_boxes, **kwargs)
+                            l_dict['loss_ce'] = l_dict['loss_ce'] * 0.2
+                        # else:
+                        #     continue
+                    else: 
+                        l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
+                    # print(i, l_dict)
                     losses.update(l_dict)
-
+        #             print('losses:', losses)
+        # print('final_loss', losses)
         if 'enc_outputs' in outputs:
             enc_outputs = outputs['enc_outputs']
             bin_targets = copy.deepcopy(targets)
             for bt in bin_targets:
                 bt['labels'] = torch.zeros_like(bt['labels'])
             indices = self.matcher(enc_outputs, bin_targets)
+            if old_teacher_outputs != None and old_student_outputs != None:
+                dis_enc_outputs = old_student_outputs['enc_outputs']
+                org_teacher_outputs = org_teacher_outputs['enc_outputs']
+                # old_teacher_outputs['pred_logits'] = old_teacher_outputs['pred_logits'].max(-1)[0].unsqueeze(-1)
+                # dis_indices = self.matcher(dis_enc_outputs, old_teacher_outputs, True)
+                dis_indices = 1
             for loss in self.losses:
+                
                 if loss == 'masks':
                     # Intermediate masks losses are too costly to compute, we ignore them.
                     continue
@@ -384,10 +505,32 @@ class SetCriterion(nn.Module):
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                if loss == 'distill':
+                    if old_teacher_outputs != None and old_student_outputs != None:
+                        teacher_points = teacher_points[:, :int(teacher_points.size(1)/2)]
+            
+                        dis_enc_outputs['pred_logits'] = torch.gather(dis_enc_outputs['pred_logits'], 1, teacher_points.unsqueeze(-1).repeat(1, 1, 21))
+                        dis_enc_outputs['pred_boxes'] = torch.gather(dis_enc_outputs['pred_boxes'], 1, teacher_points.unsqueeze(-1).repeat(1, 1, 4))
+                        
+                        org_teacher_outputs['pred_logits'] = torch.gather(org_teacher_outputs['pred_logits'], 1, teacher_points.unsqueeze(-1).repeat(1, 1, 21))[:50]
+                        org_teacher_outputs['pred_boxes'] = torch.gather(org_teacher_outputs['pred_boxes'], 1, teacher_points.unsqueeze(-1).repeat(1, 1, 4))[:50]
+                        org_enc_score = org_teacher_outputs['pred_logits'].softmax(-1).max(-1)[0]
+                        mask = org_enc_score > 0.7
+                        dis_enc_outputs['pred_logits'] = dis_enc_outputs['pred_logits'][mask]
+                        dis_enc_outputs['pred_boxes'] = dis_enc_outputs['pred_boxes'][mask]
+                        org_teacher_outputs['pred_logits'] = org_teacher_outputs['pred_logits'][mask]
+                        org_teacher_outputs['pred_boxes'] = org_teacher_outputs['pred_boxes'][mask]
+                        # print('dis_enc_outputs:', dis_enc_outputs['pred_logits'].size(), 'org_teacher_outputs:', org_teacher_outputs['pred_logits'].size())
+                        l_dict = self.get_loss(loss, dis_enc_outputs, org_teacher_outputs, dis_indices, num_boxes, **kwargs) 
+                        del org_teacher_outputs
+                    else:
+
+                        continue
+                else:
+                    l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
-
+        
         return losses
 
 
@@ -404,7 +547,7 @@ class PostProcess(nn.Module):
                           For visualization, this should be the image size after data augment, but before padding
         """
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
-
+        # print('out_logits:', out_logits.size(), 'out_bbox:', out_bbox.size())
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
@@ -413,6 +556,7 @@ class PostProcess(nn.Module):
         scores = topk_values
         topk_boxes = topk_indexes // out_logits.shape[2]
         labels = topk_indexes % out_logits.shape[2]
+        # print('topk_indexes:', topk_indexes.size(), 'topk_boxes:', topk_boxes.size(), 'labels:', labels.size())
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
         boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
 
@@ -441,10 +585,9 @@ class MLP(nn.Module):
         return x
 
 
-
 def build(args):
     # num_classes = 20 if args.dataset_file != 'coco' else 91
-    num_classes = 20
+    num_classes = 21
     if args.dataset_file == "coco_panoptic":
         num_classes = 250
     device = torch.device(args.device)
@@ -467,6 +610,9 @@ def build(args):
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
+    weight_dict['loss_distill_giou'] = args.giou_loss_coef
+    weight_dict['loss_distill_boxes'] = args.bbox_loss_coef
+    weight_dict['loss_distill'] = args.cls_loss_coef / 2
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
         weight_dict["loss_dice"] = args.dice_loss_coef
@@ -478,6 +624,7 @@ def build(args):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
+    # losses = ['labels', 'boxes', 'cardinality', 'distill']
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:
         losses += ["masks"]

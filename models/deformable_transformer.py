@@ -78,8 +78,10 @@ class DeformableTransformer(nn.Module):
         proposals = proposals.sigmoid() * scale
         # N, L, 4, 128
         pos = proposals[:, :, :, None] / dim_t
+        pos1 = pos
         # N, L, 4, 64, 2
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
+        # print('proposals:', proposals.size(), 'pos1:', pos1.size(), 'pos:', pos.size())
         return pos
 
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
@@ -123,7 +125,7 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, teacher_points=None, teacher_unact=None):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -157,16 +159,53 @@ class DeformableTransformer(nn.Module):
         if self.two_stage:
             output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
 
+            
             # hack implementation for two-stage Deformable DETR
             enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
             enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
 
             topk = self.two_stage_num_proposals
-            topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_coords_unact = topk_coords_unact.detach()
-            reference_points = topk_coords_unact.sigmoid()
-            init_reference_out = reference_points
+            # teacher_points [2, 300]
+            if teacher_points != None:
+                topk = int(topk / 2)
+                # print('topk:', topk)
+                teacher_points = teacher_points[:, :int(teacher_points.size(1)/2)]
+                teacher_points = teacher_points.repeat(1, 1)
+                # print(teacher_points)
+                mask = torch.ones([enc_outputs_class.shape[0], enc_outputs_class.shape[1]], device=output_memory.device, dtype=torch.bool)
+                mask.scatter_(1, teacher_points, 0)
+                enc_outputs_class_filter = enc_outputs_class[mask].reshape(enc_outputs_class.shape[0], -1, enc_outputs_class.shape[2])
+                # print('enc_outputs_class:', enc_outputs_class.size(), 'enc_outputs_class_filter:', enc_outputs_class_filter.size(), 'teacher_points:', teacher_points.size())
+                topk_proposals = torch.topk(enc_outputs_class_filter[..., 0], topk, dim=1)[1]
+                # teacher_topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, )
+            else:
+                topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
+            # print('top_proposals:', topk_proposals.size(), 'top_proposals2:', topk_proposals.unsqueeze(-1).repeat(1, 1, 4).size())
+            if teacher_unact != None:
+                student_topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+                student_topk_coords_unact = student_topk_coords_unact.detach()
+                student_topk_coords_unact_sigmoid = student_topk_coords_unact.sigmoid()
+
+                teacher_coords_unact = teacher_unact
+                topk_coords_unact = teacher_unact[:, :int(teacher_unact.size(1)/2), :].detach()
+
+                # print('topk_coords_unact:', topk_coords_unact.size(), 'student_topk_coords_unact', student_topk_coords_unact.size())
+                reference_points = topk_coords_unact.sigmoid()
+                reference_points = torch.cat((reference_points, student_topk_coords_unact_sigmoid), 1)
+                topk_coords_unact = torch.cat((topk_coords_unact, student_topk_coords_unact), 1)
+                
+                # print('reference_point:', reference_points.size())
+                init_reference_out = reference_points
+            else:
+                topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+                teacher_coords_unact = topk_coords_unact
+                topk_coords_unact = topk_coords_unact.detach()
+                reference_points = topk_coords_unact.sigmoid()
+                init_reference_out = reference_points
+                # output_memory: [b, pixel, h] [1, 12900, 256] enc_outputs_class: [b, pixel, class_num] [1, 12900, 21]
+                # enc_outputs_coord_unact: [b, pixel, 4] topk_coords_unact: [b, 300, 4]
+            # print('output_memory:', output_memory.size(), 'enc_outputs_class:', enc_outputs_class.size(), 'enc_outputs_coord_unact:', enc_outputs_coord_unact.size(),
+            # 'topk_coords_unact:', topk_coords_unact.size(), 'reference_points:', reference_points.size())
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
@@ -182,8 +221,8 @@ class DeformableTransformer(nn.Module):
 
         inter_references_out = inter_references
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs, init_reference_out, inter_references_out, None, None
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, teacher_coords_unact
+        return hs, init_reference_out, inter_references_out, None, None, None, None
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -335,6 +374,7 @@ class DeformableTransformerDecoder(nn.Module):
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
+            # print('reference_points_input:', reference_points_input[0][0])
             output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
 
             # hack implementation for iterative bounding box refinement

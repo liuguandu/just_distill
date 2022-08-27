@@ -23,10 +23,11 @@ from datasets.voc_eval import do_voc_evaluation, gather_multiple_gpus
 from datasets.data_prefetcher import data_prefetcher
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
+def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
     model.train()
+    teacher_model.eval()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -40,9 +41,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
-        outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        with torch.no_grad():
+            old_teacher_outputs, teacher_unact, teacher_points = teacher_model(samples, None, None)
+        # print('teacher_unact:', teacher_unact.size())
+        # old_student_outputs = None
+        # old_student_outputs, _, _ = model(samples, None, teacher_unact)
+        new_student_outputs, _, _ = model(samples, teacher_points, teacher_unact)
+        
+        # print('old_teacher:', old_teacher_outputs['pred_logits'].size(), 'old_student:', old_student_outputs['pred_logits'].size(), 'new_student_outputs:', new_student_outputs['pred_logits'].size())
+        loss_dict = criterion(new_student_outputs, targets, old_student_outputs=None, old_teacher_outputs=old_teacher_outputs, teacher_points=teacher_points)
+        del old_teacher_outputs, teacher_unact, teacher_points, new_student_outputs
         weight_dict = criterion.weight_dict
+        # print('loss_dict')
+        # print(loss_dict)
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # reduce losses over all GPUs for logging purposes
@@ -107,8 +118,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        outputs, _, _ = model(samples, None, None)
+        loss_dict = criterion(outputs, targets, None, None)
         weight_dict = criterion.weight_dict
 
         # reduce losses over all GPUs for logging purposes
