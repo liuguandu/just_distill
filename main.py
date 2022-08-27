@@ -33,9 +33,9 @@ def get_args_parser():
     parser.add_argument('--lr_backbone', default=2e-5, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
-    parser.add_argument('--batch_size', default=2, type=int)
+    parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--epochs', default=150, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
@@ -120,7 +120,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
-    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
+    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10_21/checkpoint0099.pth', help='resume from checkpoint')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
@@ -149,7 +149,11 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
+    teacher_model, _, _ = build_model(args)
+    teacher_model.to(device)
+
     model_without_ddp = model
+    teacher_without_ddp = teacher_model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
@@ -185,102 +189,26 @@ def main(args):
                 out = True
                 break
         return out
-    enlayer = 'transformer.encoder.layers'
-    delayer = 'transformer.decoder.layers'
-    org_list = []
-    r_list = []
+
     for n, p in model_without_ddp.named_parameters():
-        if p.requires_grad == True:
-            org_list.append(n)
-        for i in range(6):
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.value_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.out_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.sampling_offsets.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.output_proj.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear1.bias')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.weight')
-            r_list.append('transformer.encoder.layers.'+str(i)+'.linear2.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.attention_weights.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.value_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.out_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.output_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.cross_attn.sampling_offsets.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.in_proj_bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj_bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.self_attn.out_proj.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear1.bias')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.weight')
-            r_list.append('transformer.decoder.layers.'+str(i)+'.linear2.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.0.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.1.bias')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.weight')
-            r_list.append('transformer.decoder.bbox_embed.'+str(i)+'.layers.2.bias')
-            r_list.append('transformer.decoder.class_embed.'+str(i)+'.weight')
-            r_list.append('transformer.decoder.class_embed.'+str(i)+'.bias')     
-    print('not in')
-    for n, p in model_without_ddp.named_parameters():
-        # print(n)
-        # rlist = ['transformer.decoder.layers.'+ str(5) + '.self_attn.out_proj.weight', 'transformer.decoder.layers.' + str(5) + '.self_attn.in_proj_weight']
-        
-            # en_atten = enlayer + '.' + str(i) + '.' + 'self_attn.'
-            # de_atten = delayer + '.' + str(i) + '.' + 'cross_attn.'
-            # de_atten_2 = delayer + '.' + str(i) + '.' + 'self_attn.'
-            # if n == 'transformer.encoder.layers.1.self_attn.attention_weights.weight':
-            #     print('yes', enlayer + '.' + str(1) + '.' + 'self_attn.' + 'attention_weights.weight')
-            # print(en_atten + 'attention_weights.weight')
-            # print(en_atten + 'attention_weights.bias')
-            # print(en_atten + 'value_proj.weight')
-            # print(en_atten + 'value_proj.bias')
-            # print(en_atten + 'output_proj.weight')
-            # print(en_atten + 'output_proj.bias')
-            # print(de_atten + 'attention_weights.weight')
-            # print(de_atten + 'attention_weights.bias')
-            # if n != (en_atten + 'attention_weights.weight') and n != (en_atten + 'attention_weights.bias') \
-            #     and n != en_atten + 'value_proj.weight' and n != en_atten + 'value_proj.bias' \
-            #     and n != en_atten + 'output_proj.weight' and n != en_atten + 'output_proj.bias' \
-            #     and n != de_atten + 'attention_weights.weight' and n != de_atten + 'attention_weights.bias' \
-            #     and n != de_atten + 'value_proj.weight' and n != de_atten + 'value_proj.bias' \
-            #     and n != de_atten + 'output_proj.weight' and n != de_atten + 'output_proj.bias' \
-            #     and n != de_atten_2 + 'in_proj_weight' and n != de_atten_2 + 'in_proj_bias' \
-            #     and n != de_atten_2 + 'out_proj.weight' and n != de_atten_2 + 'out_proj.bias':
-        if n not in r_list:
-            print(n)
-            p.requires_grad = False
+        print(n)
+
     param_dicts = [
         {
             "params":
                 [p for n, p in model_without_ddp.named_parameters()
-                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and (p.requires_grad or (n in org_list))], # p.require
+                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
             "lr": args.lr,
         },
         {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_backbone_names) and (p.requires_grad or (n in org_list))],
+            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_backbone_names) and p.requires_grad],
             "lr": args.lr_backbone,
         },
         {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and (p.requires_grad or (n in org_list))],
+            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
             "lr": args.lr * args.lr_linear_proj_mult,
         }
     ]
-    # print(param_dicts)
     if args.sgd:
         optimizer = torch.optim.SGD(param_dicts, lr=args.lr, momentum=0.9,
                                     weight_decay=args.weight_decay)
@@ -292,6 +220,8 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu])
+        teacher_model_without_ddp = teacher_model.module
     # base_ds = None
     if args.dataset_file == "coco_panoptic":
         # We also evaluate AP during panoptic training, on original coco DS
@@ -303,6 +233,7 @@ def main(args):
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
+        teacher_model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -311,11 +242,8 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        # print('checkpoint49:', checkpoint['model']['transformer.level_embed'])
-        # for n, p in checkpoint['model'].named_parameters:
-        #     print(n)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-
+        _, _ = teacher_model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
@@ -339,13 +267,14 @@ def main(args):
             lr_scheduler.step(lr_scheduler.last_epoch)
             args.start_epoch = checkpoint['epoch'] + 1
         # check the resumed model
-        if not args.eval:
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
-            )
+        # if not args.eval:
+        #     test_stats, coco_evaluator = evaluate(
+        #         model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
+        #     )
     # test_stats, coco_evaluator = evaluate(
     #             model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
     #         )
+
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
                                               data_loader_val, base_ds, device, args.output_dir, dataset_val)
@@ -359,7 +288,7 @@ def main(args):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            model, teacher_model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
