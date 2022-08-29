@@ -46,10 +46,12 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
         # print('teacher_unact:', teacher_unact.size())
         # old_student_outputs = None
         # old_student_outputs, _, _ = model(samples, None, teacher_unact)
-        new_student_outputs, _, _ = model(samples, teacher_points, teacher_unact)
+
+        # new_student_outputs, _, _ = model(samples, teacher_points, None)
+        new_student_outputs, _, _ = model(samples, None, None)
         
         # print('old_teacher:', old_teacher_outputs['pred_logits'].size(), 'old_student:', old_student_outputs['pred_logits'].size(), 'new_student_outputs:', new_student_outputs['pred_logits'].size())
-        loss_dict = criterion(new_student_outputs, targets, old_student_outputs=None, old_teacher_outputs=old_teacher_outputs, teacher_points=teacher_points)
+        loss_dict = criterion(new_student_outputs, targets, old_student_outputs=None, old_teacher_outputs=None, teacher_points=None)
         del old_teacher_outputs, teacher_unact, teacher_points, new_student_outputs
         weight_dict = criterion.weight_dict
         # print('loss_dict')

@@ -167,9 +167,10 @@ class DeformableTransformer(nn.Module):
             topk = self.two_stage_num_proposals
             # teacher_points [2, 300]
             if teacher_points != None:
-                topk = int(topk / 2)
+                # topk = int(topk / 2)
                 # print('topk:', topk)
-                teacher_points = teacher_points[:, :int(teacher_points.size(1)/2)]
+                # teacher_points = teacher_points[:, :int(teacher_points.size(1)/6)]
+                teacher_points = teacher_points[:, :1]
                 teacher_points = teacher_points.repeat(1, 1)
                 # print(teacher_points)
                 mask = torch.ones([enc_outputs_class.shape[0], enc_outputs_class.shape[1]], device=output_memory.device, dtype=torch.bool)

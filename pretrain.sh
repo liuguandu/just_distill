@@ -1,1 +1,1 @@
-GPUS_PER_NODE=1 CUDA_VISIBLE_DEVICES=1 ./tools/run_dist_launch.sh 1 ./configs/r50_deformable_detr_plus_iterative_bbox_refinement_plus_plus_two_stage.sh
+GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3 ./tools/run_dist_launch.sh 4 ./configs/r50_deformable_detr_plus_iterative_bbox_refinement_plus_plus_two_stage.sh
