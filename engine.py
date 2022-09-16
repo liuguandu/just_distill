@@ -43,6 +43,7 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         with torch.no_grad():
             old_teacher_outputs, teacher_unact, teacher_points = teacher_model(samples, None, None)
+            
         # print('teacher_unact:', teacher_unact.size())
         # old_student_outputs = None
         # old_student_outputs, _, _ = model(samples, None, teacher_unact)

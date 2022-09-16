@@ -475,8 +475,8 @@ class SetCriterion(nn.Module):
                         if old_teacher_outputs != None and old_student_outputs != None:
                             l_dict = self.get_loss('labels', old_aux_outputs, old_target, old_indices, old_num_boxes, **kwargs)
                             l_dict['loss_ce'] = l_dict['loss_ce'] * 0.2
-                        # else:
-                        #     continue
+                        else:
+                            continue
                     else: 
                         l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
