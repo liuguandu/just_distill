@@ -121,6 +121,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10_21/checkpoint0099.pth', help='resume from checkpoint')
+    # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_jointTraining/checkpoint0049.pth', help='resume from checkpoint')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
@@ -218,9 +219,9 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
-        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu])
+        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], find_unused_parameters=True)
         teacher_model_without_ddp = teacher_model.module
     # base_ds = None
     if args.dataset_file == "coco_panoptic":
@@ -234,14 +235,21 @@ def main(args):
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
         teacher_model_without_ddp.detr.load_state_dict(checkpoint['model'])
-
+    # print('optimizer:', optimizer.state_dict())
     output_dir = Path(args.output_dir)
+    # teacher_checkpoint = torch.load('/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10_21/checkpoint0099.pth', map_location='cpu')
+    # _, _ = teacher_model_without_ddp.load_state_dict(teacher_checkpoint['model'], strict=False)
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
+        model_dict = model_without_ddp.state_dict()
+        # pretrained_dict = {k: v for k, v in checkpoint['model'].items() if 'bbox_embed' not in k and 'class_embed' not in k}
+        # print('student parameter:')
+        # for k, v in pretrained_dict.items():
+        #     print(k)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         _, _ = teacher_model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
@@ -252,7 +260,7 @@ def main(args):
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # optimizer.load_state_dict(checkpoint['optimizer'])
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
                 pg['lr'] = pg_old['lr']
                 pg['initial_lr'] = pg_old['initial_lr']
@@ -271,9 +279,9 @@ def main(args):
         #     test_stats, coco_evaluator = evaluate(
         #         model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
         #     )
-    # test_stats, coco_evaluator = evaluate(
-    #             model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
-    #         )
+    test_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, dataset_val
+            )
 
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
