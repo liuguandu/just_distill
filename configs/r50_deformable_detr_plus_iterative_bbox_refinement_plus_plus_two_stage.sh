@@ -3,7 +3,7 @@
 set -x
 
 # EXP_DIR=exps/r50_deformable_detr_plus_iterative_bbox_refinement_plus_plus_two_stage
-EXP_DIR=exps/voc2007_lat10
+EXP_DIR=exps/voc2007_lat10_haveold_valid
 PY_ARGS=${@:1}
 
 python -u main.py \

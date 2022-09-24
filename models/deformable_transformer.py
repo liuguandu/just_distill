@@ -125,7 +125,7 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None, teacher_points=None, teacher_unact=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, teacher_points=None, teacher_unact=None, have_old=None):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -166,7 +166,8 @@ class DeformableTransformer(nn.Module):
 
             topk = self.two_stage_num_proposals
             # teacher_points [2, 300]
-            if teacher_points != None:
+            # print('teacher_point:', teacher_points, 'teacher_unact:', teacher_unact)
+            if teacher_points != None and have_old == 1:
                 # topk = int(topk / 2)
                 # print('topk:', topk)
                 # teacher_points = teacher_points[:, :int(teacher_points.size(1)/6)]
@@ -182,7 +183,7 @@ class DeformableTransformer(nn.Module):
             else:
                 topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
             # print('top_proposals:', topk_proposals.size(), 'top_proposals2:', topk_proposals.unsqueeze(-1).repeat(1, 1, 4).size())
-            if teacher_unact != None:
+            if teacher_unact != None and have_old == 1:
                 student_topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
                 student_topk_coords_unact = student_topk_coords_unact.detach()
                 student_topk_coords_unact_sigmoid = student_topk_coords_unact.sigmoid()

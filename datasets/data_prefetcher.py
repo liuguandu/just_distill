@@ -22,10 +22,11 @@ class data_prefetcher():
 
     def preload(self):
         try:
-            self.next_samples, self.next_targets = next(self.loader)
+            self.next_samples, self.next_targets, self.next_img = next(self.loader)
         except StopIteration:
             self.next_samples = None
             self.next_targets = None
+            self.next_img = None
             return
         # if record_stream() doesn't work, another option is to make sure device inputs are created
         # on the main stream.
@@ -53,18 +54,21 @@ class data_prefetcher():
             torch.cuda.current_stream().wait_stream(self.stream)
             samples = self.next_samples
             targets = self.next_targets
+            img = self.next_img
             if samples is not None:
                 samples.record_stream(torch.cuda.current_stream())
             if targets is not None:
                 for t in targets:
                     for k, v in t.items():
                         v.record_stream(torch.cuda.current_stream())
+
             self.preload()
         else:
             try:
-                samples, targets = next(self.loader)
+                samples, targets, img = next(self.loader)
                 samples, targets = to_cuda(samples, targets, self.device)
             except StopIteration:
                 samples = None
                 targets = None
-        return samples, targets
+                img = None
+        return samples, targets, img

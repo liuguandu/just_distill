@@ -111,7 +111,7 @@ class DeformableDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, samples: NestedTensor, teacher_points=None, teacher_unact=None):
+    def forward(self, samples: NestedTensor, teacher_points=None, teacher_unact=None, have_old=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -154,7 +154,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, teacher_coords_unact = self.transformer(srcs, masks, pos, query_embeds, teacher_points, teacher_unact)
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, teacher_coords_unact = self.transformer(srcs, masks, pos, query_embeds, teacher_points, teacher_unact, have_old)
 
         outputs_classes = []
         outputs_coords = []
@@ -403,11 +403,11 @@ class SetCriterion(nn.Module):
             # tgt_id = F.softmax(old_teacher_outputs['pred_logits'], -1).max(-1)[1]
             # print('old_teacher_outputs:', old_teacher_outputs['pred_logits'].size(), 'tgt_id:', tgt_id.size())
             for i in range(len(logit_list)):
-                # if len(targets[i]['labels']) > 0:
-                #     targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
-                #     targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
-                old_target.append({'labels': logit_list[i]})
-                old_target[i]['boxes'] = boxes_list[i]
+                if len(targets[i]['labels']) > 0:
+                    targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
+                    targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
+                # old_target.append({'labels': logit_list[i]})
+                # old_target[i]['boxes'] = boxes_list[i]
                 
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
@@ -442,6 +442,7 @@ class SetCriterion(nn.Module):
                 #     losses.update(self.get_loss(loss, old_student_outputs, old_teacher_outputs, dis_indices, num_boxes, **kwargs))
                 # else:
                 # continue
+
                 if old_teacher_outputs != None and old_student_outputs != None:
                     mid_loss = self.get_loss('labels', old_student_outputs, old_target, old_indices, old_num_boxes, **kwargs)
                     mid_loss['loss_ce'] = mid_loss['loss_ce'] * 0.2

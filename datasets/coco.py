@@ -31,13 +31,13 @@ class CocoDetection(TvCocoDetection):
         self.prepare = ConvertCocoPolysToMask(return_masks)
 
     def __getitem__(self, idx):
-        img, target = super(CocoDetection, self).__getitem__(idx)
+        img, target, have_old = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
         if self._transforms is not None:
             img, target = self._transforms(img, target)
-        return img, target
+        return img, target, have_old
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
@@ -163,7 +163,7 @@ def build(image_set, args):
     #     "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
     # }
     PATHS = {
-        "train": ('./data/VOC2007', root / 'VOC2007_trainval_pre10.json'),
+        "train": ('./data/VOC2007', root / 'VOC2007_trainval_pre10_haveOld.json'),
         "val": ('./data/VOC2007', root / 'VOC2007_test.json'),
     }
     img_folder, ann_file = PATHS[image_set]

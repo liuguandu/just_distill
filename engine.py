@@ -37,7 +37,7 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
     print_freq = 10
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
-    samples, targets = prefetcher.next()
+    samples, targets, have_old = prefetcher.next()
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
@@ -87,7 +87,7 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
-        samples, targets = prefetcher.next()
+        samples, targets, have_old = prefetcher.next()
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -117,7 +117,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             output_dir=os.path.join(output_dir, "panoptic_eval"),
         )
 
-    for samples, targets in metric_logger.log_every(data_loader, 10, header):
+    for samples, targets, have_old in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
