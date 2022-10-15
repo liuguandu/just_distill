@@ -30,8 +30,59 @@ import copy
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
-
-
+def smooth_l1_loss(input, target, beta=1. / 9, size_average=True):
+    """
+    very similar to the smooth_l1_loss from pytorch, but with
+    the extra beta parameter
+    """
+    # print('smooth_l1_loss.py | input size: {0}'.format(input.size()))
+    n = torch.abs(input - target)
+    cond = n < beta
+    loss = torch.where(cond, 0.5 * n ** 2 / beta, n - 0.5 * beta)
+    if size_average:
+        return loss.mean()
+    return loss.sum()
+def feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls):
+    one_stage_feature_cls = one_stage_feature_cls[:, :, 0].unsqueeze(-1)
+    teacher_feature_cls = teacher_feature_cls[:, :, 0].unsqueeze(-1)
+    one_stage_difference = one_stage_feature_cls - teacher_feature_cls
+    filters = torch.zeros(one_stage_feature_cls.size()).to(one_stage_feature_cls.device)
+    distill_difference = torch.max(one_stage_difference, filters)
+    cls_distill_loss = torch.mul(distill_difference, distill_difference)
+    cls_distill_loss = cls_distill_loss.mean()
+    l2_loss = nn.MSELoss(size_average=False, reduce=False)
+    bbox_threshold = 0.1
+    mask = (one_stage_difference > bbox_threshold)
+    mask = mask.reshape(mask.size(0), -1)
+    # print('mask:', mask.size(), 'one_stage_feature_box1:', one_stage_feature_box.size(), 'one_stage_feature_box:', one_stage_feature_box[mask].size())
+    # print('one_stage_feature_box:', one_stage_feature_box.size(), 'teacher_feature_box:', teacher_feature_box.size())
+    if one_stage_feature_box[mask].size(0) > 0:
+        box_distill_loss = l2_loss(one_stage_feature_box[mask].reshape(mask.size(0), -1, 4), teacher_feature_box[mask].reshape(mask.size(0), -1, 4))
+        box_distill_loss = box_distill_loss.sum(-1).mean()
+    else:
+        box_distill_loss = 0
+    final_distill_loss = cls_distill_loss + box_distill_loss
+    loss = {}
+    loss['loss_fea_distill'] = final_distill_loss
+    return loss
+def prediction_distillation(student_cls_output, teacher_cls_output, student_box_output, teacher_box_output):
+    teacher_cls_score = teacher_cls_output.max(-1)[0]
+    topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
+    topk_teacher_cls = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+    topk_student_cls = torch.gather(student_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+    topk_teacher_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+    topk_student_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+    topk_student_cls = F.softmax(topk_student_cls, dim=2)
+    topk_teacher_cls = F.log_softmax(topk_teacher_cls, dim=2)
+    cls_distill_loss = - topk_teacher_cls * topk_student_cls
+    cls_distill_loss = cls_distill_loss.sum(-1).mean()
+    box_num = topk_teacher_box.size(0) * topk_teacher_box.size(1)
+    bbox_distill_loss = smooth_l1_loss(topk_teacher_box, topk_student_box, size_average=False, beta=1)
+    bbox_distill_loss = bbox_distill_loss / box_num
+    final_distill_loss = torch.add(cls_distill_loss, bbox_distill_loss)
+    loss = {}
+    loss['loss_prediction_distill'] = final_distill_loss
+    return loss
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
@@ -111,7 +162,7 @@ class DeformableDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, teacher_points=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -154,7 +205,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, one_stage_feature_box, one_stage_feature_cls = self.transformer(srcs, masks, pos, query_embeds, teacher_points)
 
         outputs_classes = []
         outputs_coords = []
@@ -184,7 +235,7 @@ class DeformableDETR(nn.Module):
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-        return out
+        return out, topk_proposals, one_stage_feature_box, one_stage_feature_cls
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -306,7 +357,6 @@ class SetCriterion(nn.Module):
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
         }
         return losses
-
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -329,33 +379,37 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets, teacher_output=None):
+    def forward(self, outputs, targets, teacher_output=None, student_output=None, one_stage_feature_box=None, one_stage_feature_cls=None, teacher_feature_box=None, teacher_feature_cls=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        if teacher_output != None:
-            outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
-            pred = teacher_output['pred_logits']
-            pred = pred.softmax(-1).max(-1)[0]
-            topk_index = torch.topk(pred, 10, 1)[1]
-            topk_score = torch.topk(pred, 10, 1)[0]
-            mask = topk_score > 0.7
-            teacher_output['pred_logits'] = torch.gather(teacher_output['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
-            teacher_output['pred_boxes'] = torch.gather(teacher_output['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
-            logit_list = []
-            boxes_list = []
-            for i in range(len(mask)):
-                tgt_id = F.softmax(teacher_output['pred_logits'][i][mask[i]], -1).max(-1)[1]
-                logit_list.append(tgt_id)
-                boxes_list.append(teacher_output['pred_boxes'][i][mask[i]])
-        if teacher_output != None and teacher_output['pred_logits'].size(1) > 0:
-            for i in range(len(logit_list)):
-                if len(targets[i]['labels']) > 0:
-                    targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
-                    targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
+        # if teacher_output != None:
+        #     outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+        #     pred = teacher_output['pred_logits']
+        #     pred = pred.softmax(-1).max(-1)[0]
+        #     topk_index = torch.topk(pred, 10, 1)[1]
+        #     topk_score = torch.topk(pred, 10, 1)[0]
+        #     mask = topk_score > 0.7
+        #     teacher_output['pred_logits'] = torch.gather(teacher_output['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
+        #     teacher_output['pred_boxes'] = torch.gather(teacher_output['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+        #     logit_list = []
+        #     boxes_list = []
+        #     for i in range(len(mask)):
+        #         tgt_id = F.softmax(teacher_output['pred_logits'][i][mask[i]], -1).max(-1)[1]
+        #         logit_list.append(tgt_id)
+        #         boxes_list.append(teacher_output['pred_boxes'][i][mask[i]])
+        # if teacher_output != None and teacher_output['pred_logits'].size(1) > 0:
+        #     for i in range(len(logit_list)):
+        #         if len(targets[i]['labels']) > 0:
+        #             targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
+        #             targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
+        # print('output:', outputs)
+
+        if teacher_output == None:
+            self.losses = ['labels', 'boxes', 'cardinality']
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -372,11 +426,20 @@ class SetCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             kwargs = {}
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
+            if loss == 'distill':
+                loss_dict = prediction_distillation(student_output['pred_logits'], teacher_output['pred_logits'].detach(), student_output['pred_boxes'], teacher_output['pred_boxes'].detach())
+                losses.update(loss_dict)
+            else:
+                losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
-            for i, aux_outputs in enumerate(outputs['aux_outputs']):
+            # for i, aux_outputs, aux_student_output, aux_teacher_output in enumerate(outputs['aux_outputs'], student_output['aux_outputs'], teacher_output['aux_outputs']):
+            for i in range(len(outputs['aux_outputs'])):
+                aux_outputs = outputs['aux_outputs'][i]
+                if teacher_output != None:
+                    aux_student_output = student_output['aux_outputs'][i]
+                    aux_teacher_output = teacher_output['aux_outputs'][i]
                 indices = self.matcher(aux_outputs, targets)
                 for loss in self.losses:
                     if loss == 'masks':
@@ -386,7 +449,10 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    if loss == 'distill':
+                        l_dict = prediction_distillation(aux_student_output['pred_logits'], aux_teacher_output['pred_logits'].detach(), aux_student_output['pred_boxes'], aux_teacher_output['pred_boxes'].detach())
+                    else:
+                        l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -404,7 +470,10 @@ class SetCriterion(nn.Module):
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                if loss == 'distill':
+                    l_dict = feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls)
+                else:
+                    l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
@@ -487,6 +556,8 @@ def build(args):
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
+    weight_dict['loss_fea_distill'] = args.cls_loss_coef / 2
+    weight_dict['loss_prediction_distill'] = args.cls_loss_coef / 2
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
         weight_dict["loss_dice"] = args.dice_loss_coef
@@ -498,7 +569,7 @@ def build(args):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ['labels', 'boxes', 'cardinality']
+    losses = ['labels', 'boxes', 'cardinality', 'distill']
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25

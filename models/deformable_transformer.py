@@ -123,7 +123,7 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, teacher_points=None):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -160,15 +160,27 @@ class DeformableTransformer(nn.Module):
             # hack implementation for two-stage Deformable DETR
             enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
             enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
-
             topk = self.two_stage_num_proposals
             topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
+            if teacher_points != None:
+                one_stage_feature_cls = torch.gather(enc_outputs_class, 1, teacher_points.unsqueeze(-1).repeat(1, 1, 21))
+                one_stage_feature_box = torch.gather(enc_outputs_coord_unact, 1, teacher_points.unsqueeze(-1).repeat(1, 1, 4))
+                topk_proposals = teacher_points
+            else:
+                one_stage_feature_cls = torch.gather(enc_outputs_class, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 21))
+                one_stage_feature_box = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+                one_stage_feature_cls = one_stage_feature_cls.detach()
+                one_stage_feature_box = one_stage_feature_box.detach()           
+                
             topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
             topk_coords_unact = topk_coords_unact.detach()
             reference_points = topk_coords_unact.sigmoid()
             init_reference_out = reference_points
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            # print('enc_outputs_class:', enc_outputs_class.size())
+            
+                
         else:
             query_embed, tgt = torch.split(query_embed, c, dim=1)
             query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
@@ -182,7 +194,7 @@ class DeformableTransformer(nn.Module):
 
         inter_references_out = inter_references
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, topk_proposals, one_stage_feature_box, one_stage_feature_cls
         return hs, init_reference_out, inter_references_out, None, None
 
 

@@ -42,9 +42,11 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         with torch.no_grad():
-            teacher_output = teacher_model(samples)
-        outputs = model(samples)
-        loss_dict = criterion(outputs, targets, teacher_output)
+            teacher_output, teacher_points, teacher_feature_box, teacher_feature_cls = teacher_model(samples)
+        
+        student_output, _, one_stage_feature_box, one_stage_feature_cls = model(samples, teacher_points)
+        outputs, _, _, _ = model(samples)
+        loss_dict = criterion(outputs, targets, teacher_output, student_output, one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
@@ -110,7 +112,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
+        outputs, _, _, _ = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
