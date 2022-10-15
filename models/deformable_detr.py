@@ -410,6 +410,8 @@ class SetCriterion(nn.Module):
 
         if teacher_output == None:
             self.losses = ['labels', 'boxes', 'cardinality']
+        else:
+            self.losses = ['labels', 'boxes', 'cardinality', 'distill']
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
