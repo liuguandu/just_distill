@@ -42,7 +42,7 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = cost_giou
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, teacher_output=None):
         """ Performs the matching
 
         Params:
@@ -90,10 +90,30 @@ class HungarianMatcher(nn.Module):
             # Final cost matrix
             C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
             C = C.view(bs, num_queries, -1).cpu()
-
             sizes = [len(v["boxes"]) for v in targets]
-            indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+            if teacher_output != None:
+                num_teacher = teacher_output["pred_logits"].size(1)
+                teacher_prob = teacher_output["pred_logits"].flatten(0, 1).sigmoid()
+                teacher_bbox = teacher_output["pred_boxes"].flatten(0, 1)
+                teacher_ids = teacher_prob.max(-1)[1]
+                neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+                pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+                cost_class = pos_cost_class[:, teacher_ids] - neg_cost_class[:, teacher_ids]
+                cost_bbox = torch.cdist(out_bbox, teacher_bbox, p=1)
+                cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
+                                             box_cxcywh_to_xyxy(teacher_bbox))
+                T_C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+                T_C = T_C.view(bs, num_queries, -1).cpu()
+                teacher_sizes = [num_teacher for v in targets]
+                TC_list = T_C.split(teacher_sizes, -1)
+                indices = [linear_sum_assignment(torch.cat((c[i], TC_list[i][i]), -1)) for i, c in enumerate(C.split(sizes, -1))]
+                mask = [torch.as_tensor(j, dtype=torch.int64)<sizes[m] for m, (i, j) in enumerate(indices)]
+                mask2 = [torch.as_tensor(j, dtype=torch.int64)>=sizes[m] for m, (i, j) in enumerate(indices)]
+                return [(torch.as_tensor(i, dtype=torch.int64)[mask[m]], torch.as_tensor(j, dtype=torch.int64)[mask[m]]) for m, (i, j) in enumerate(indices)], \
+                    [(torch.as_tensor(i, dtype=torch.int64)[mask2[m]], torch.as_tensor(j, dtype=torch.int64)[mask2[m]]-sizes[m]) for m, (i, j) in enumerate(indices)]
+            else:
+                indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+                return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
 
 def build_matcher(args):

@@ -65,20 +65,49 @@ def feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_f
     loss = {}
     loss['loss_fea_distill'] = final_distill_loss
     return loss
-def prediction_distillation(student_cls_output, teacher_cls_output, student_box_output, teacher_box_output):
-    teacher_cls_score = teacher_cls_output.max(-1)[0]
-    topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
-    topk_teacher_cls = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
-    topk_student_cls = torch.gather(student_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
-    topk_teacher_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
-    topk_student_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+def prediction_distillation(student_output, teacher_output, indices):
+    student_cls_output = student_output['pred_logits']
+    teacher_cls_output = teacher_output['pred_logits'].detach()
+    student_box_output = student_output['pred_boxes']
+    teacher_box_output = teacher_output['pred_boxes'].detach()
+    # print('pre_student_cls_output', student_cls_output.size(), 'teacher_cls_output', teacher_cls_output.size(), 
+    #       'student_box_output', student_box_output.size(), 'teacher_box_output', teacher_box_output.size())
+    # print('indices:', indices[0][0].size(), indices[0][1].size())
+    # print('mid_student_cls_output', student_cls_output[0].size(), 'teacher_cls_output', teacher_cls_output[0].size(), 
+    #       'student_box_output', student_box_output[0].size(), 'teacher_box_output', teacher_box_output[0].size())
+    # print(indices)
+    student_cls_output = student_cls_output[0][indices[0][0]].unsqueeze(0)
+    teacher_cls_output = teacher_cls_output[0][indices[0][1]].unsqueeze(0)
+    student_box_output = student_box_output[0][indices[0][0]].unsqueeze(0)
+    teacher_box_output = teacher_box_output[0][indices[0][1]].unsqueeze(0)
+    # print('student_cls_output', student_cls_output.size(), 'teacher_cls_output', teacher_cls_output.size(), 
+        #   'student_box_output', student_box_output.size(), 'teacher_box_output', teacher_box_output.size())
+    # student_cls_list = [student_cls_output[m][i] for m, (i, j) in enumerate(indices)]
+    # student
+    # for m in range(len(indices)):
+    #     (i, j) = indices[m]
+    #     student_cls_output = 
+    # teacher_cls_score = teacher_cls_output.max(-1)[0]
+    # topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
+    # topk_teacher_cls = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+    # topk_student_cls = torch.gather(student_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+    # topk_teacher_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+    # topk_student_box = torch.gather(teacher_cls_output, 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+    # print('student_cls_output', student_cls_output.size(), 'teacher_cls_output', teacher_cls_output.size(), 
+    #       'student_box_output', student_box_output.size(), 'teacher_box_output', teacher_box_output.size())
+    topk_student_cls = student_cls_output 
+    topk_teacher_cls = teacher_cls_output
+    topk_student_box = student_box_output
+    topk_teacher_box = teacher_box_output
     topk_student_cls = F.softmax(topk_student_cls, dim=2)
     topk_teacher_cls = F.log_softmax(topk_teacher_cls, dim=2)
     cls_distill_loss = - topk_teacher_cls * topk_student_cls
     cls_distill_loss = cls_distill_loss.sum(-1).mean()
+    # print('cls_distillation', cls_distill_loss)
     box_num = topk_teacher_box.size(0) * topk_teacher_box.size(1)
     bbox_distill_loss = smooth_l1_loss(topk_teacher_box, topk_student_box, size_average=False, beta=1)
     bbox_distill_loss = bbox_distill_loss / box_num
+    # print('bbox_distillation', bbox_distill_loss)
     final_distill_loss = torch.add(cls_distill_loss, bbox_distill_loss)
     loss = {}
     loss['loss_prediction_distill'] = final_distill_loss
@@ -276,7 +305,7 @@ class SetCriterion(nn.Module):
         src_logits = outputs['pred_logits']
 
         idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        target_classes_o = torch.cat([t["labels"][J]for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
@@ -415,8 +444,24 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
-
+        if teacher_output != None:
+            teacher_cls_score = teacher_output['pred_logits'].max(-1)[0]
+            topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
+                # print('teacher_output[]', teacher_output['pred_logits'].size(), topk_teacher.size())
+            topk_teacher_cls = torch.gather(teacher_output['pred_logits'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+            topk_teacher_box = torch.gather(teacher_output['pred_boxes'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+                # print('topk_teacher_cls', topk_teacher_cls.size(), topk_teacher_box.size())
+            teacher_output2 = {}
+            teacher_output2['pred_logits'] = topk_teacher_cls
+            teacher_output2['pred_boxes'] = topk_teacher_box
+            indices, teacher_indices = self.matcher(outputs_without_aux, targets, teacher_output2)
+        else:
+            teacher_output2 = None
+            indices = self.matcher(outputs_without_aux, targets, teacher_output2)
+        # print('teacher_indices:', teacher_indices[0][0].size(), teacher_indices[0][1].size())
+        # print('targets', [len(v["boxes"]) for v in targets])
+        # print('indices', indices)
+        # print('teacher_indices', teacher_indices)
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
@@ -429,7 +474,8 @@ class SetCriterion(nn.Module):
         for loss in self.losses:
             kwargs = {}
             if loss == 'distill':
-                loss_dict = prediction_distillation(student_output['pred_logits'], teacher_output['pred_logits'].detach(), student_output['pred_boxes'], teacher_output['pred_boxes'].detach())
+                
+                loss_dict = prediction_distillation(outputs, teacher_output2, teacher_indices)
                 losses.update(loss_dict)
             else:
                 losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
@@ -440,9 +486,19 @@ class SetCriterion(nn.Module):
             for i in range(len(outputs['aux_outputs'])):
                 aux_outputs = outputs['aux_outputs'][i]
                 if teacher_output != None:
-                    aux_student_output = student_output['aux_outputs'][i]
+                    # aux_student_output = outputs['aux_outputs'][i]
                     aux_teacher_output = teacher_output['aux_outputs'][i]
-                indices = self.matcher(aux_outputs, targets)
+                    teacher_cls_score = aux_teacher_output['pred_logits'].max(-1)[0]
+                    topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
+                    topk_teacher_cls = torch.gather(aux_teacher_output['pred_logits'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+                    topk_teacher_box = torch.gather(aux_teacher_output['pred_boxes'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+                    aux_teacher_output2 = {}
+                    aux_teacher_output2['pred_logits'] = topk_teacher_cls
+                    aux_teacher_output2['pred_boxes'] = topk_teacher_box
+                    indices, teacher_indices = self.matcher(aux_outputs, targets, aux_teacher_output2)
+                else:
+                    aux_teacher_output2 = None
+                    indices = self.matcher(aux_outputs, targets, aux_teacher_output2)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -452,7 +508,9 @@ class SetCriterion(nn.Module):
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
                     if loss == 'distill':
-                        l_dict = prediction_distillation(aux_student_output['pred_logits'], aux_teacher_output['pred_logits'].detach(), aux_student_output['pred_boxes'], aux_teacher_output['pred_boxes'].detach())
+
+                        l_dict = prediction_distillation(aux_outputs, aux_teacher_output2, teacher_indices)
+                        # print('l_dict', l_dict)
                     else:
                         l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
@@ -474,6 +532,7 @@ class SetCriterion(nn.Module):
                     kwargs['log'] = False
                 if loss == 'distill':
                     l_dict = feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls)
+                    # print('enc_l_dict', l_dict)
                 else:
                     l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}

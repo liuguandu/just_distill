@@ -43,10 +43,18 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         with torch.no_grad():
             teacher_output, teacher_points, teacher_feature_box, teacher_feature_cls = teacher_model(samples)
-        
-        student_output, _, one_stage_feature_box, one_stage_feature_cls = model(samples, teacher_points)
-        outputs, _, _, _ = model(samples)
-        loss_dict = criterion(outputs, targets, teacher_output, student_output, one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls)
+        # teacher_cls_score = teacher_output2['pred_logits'].max(-1)[0]
+        # topk_teacher = torch.topk(teacher_cls_score, 100, dim=1)[1]
+        # topk_teacher_cls = torch.gather(teacher_output2['pred_logits'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 21))
+        # topk_teacher_box = torch.gather(teacher_output2['pred_boxes'], 1, topk_teacher.unsqueeze(-1).repeat(1, 1, 4))
+        # teacher_output = {}
+        # teacher_output['pred_logits'] = topk_teacher_cls
+        # teacher_output['pred_boxes'] = topk_teacher_box
+        teacher_feature_box = teacher_feature_box.detach()
+        teacher_feature_cls = teacher_feature_cls.detach()
+        student_output, _, one_stage_feature_box, one_stage_feature_cls = model(samples)
+        # outputs, _, _, _ = model(samples)
+        loss_dict = criterion(student_output, targets, teacher_output, student_output, one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
@@ -77,7 +85,6 @@ def train_one_epoch(model: torch.nn.Module, teacher_model: torch.nn.Module, crit
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
-
         samples, targets = prefetcher.next()
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
