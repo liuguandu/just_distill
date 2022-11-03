@@ -14,6 +14,9 @@ import math
 import os
 import sys
 from typing import Iterable
+import numpy as np
+from PIL import Image
+from PIL import ImageDraw
 
 import torch
 import util.misc as utils
@@ -21,7 +24,49 @@ from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.voc_eval import do_voc_evaluation, gather_multiple_gpus
 from datasets.data_prefetcher import data_prefetcher
+from models.selectivesearch import selectivesearch
 
+def intersect(box_a, box_b):
+    """ We resize both tensors to [A,B,2] without new malloc:
+    [A,2] -> [A,1,2] -> [A,B,2]
+    [B,2] -> [1,B,2] -> [A,B,2]
+    Then we compute the area of intersect between box_a and box_b.
+    Args:
+      box_a: (tensor) bounding boxes, Shape: [A,4].
+      box_b: (tensor) bounding boxes, Shape: [B,4].
+    Return:
+      (tensor) intersection area, Shape: [A,B].
+    """
+    A = box_a.size(0)
+    B = box_b.size(0)
+    max_xy = torch.min(box_a[:, 2:].unsqueeze(1).expand(A, B, 2),
+                       box_b[:, 2:].unsqueeze(0).expand(A, B, 2))
+    min_xy = torch.max(box_a[:, :2].unsqueeze(1).expand(A, B, 2),
+                       box_b[:, :2].unsqueeze(0).expand(A, B, 2))
+    inter = torch.clamp((max_xy - min_xy), min=0)
+    return inter[:, :, 0] * inter[:, :, 1]
+    # inter[:, :, 0] is the width of intersection and inter[:, :, 1] is height
+
+
+def jaccard(box_a, box_b):
+    """Compute the jaccard overlap of two sets of boxes.  The jaccard overlap
+    is simply the intersection over union of two boxes.  Here we operate on
+    ground truth boxes and default boxes.
+    E.g.:
+        A ∩ B / A ∪ B = A ∩ B / (area(A) + area(B) - A ∩ B)
+    Args:
+        box_a: (tensor) Ground truth bounding boxes, Shape: [A,4]
+        box_b: (tensor) Prior boxes from priorbox layers, Shape: [B,4]
+    Return:
+        jaccard overlap: (tensor) Shape: [A, B]
+    """
+    inter = intersect(box_a, box_b)
+    area_a = ((box_a[:, 2]-box_a[:, 0]) *
+              (box_a[:, 3]-box_a[:, 1])).unsqueeze(1).expand_as(inter)  # [A,B]
+    area_b = ((box_b[:, 2]-box_b[:, 0]) *
+              (box_b[:, 3]-box_b[:, 1])).unsqueeze(0).expand_as(inter)  # [A,B]
+    union = area_a + area_b - inter
+    return inter / union  # [A,B]
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -37,9 +82,50 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
-
+    count = 0
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        # print(samples)
+        samples_tensor, _ = samples.decompose()
+        # print(samples_tensor)
+        samples_tensor = samples_tensor.reshape(-1, samples_tensor.size(2), samples_tensor.size(3))
+        samples_tensor = samples_tensor.permute(1, 2, 0)
+        
+        samples_np = samples_tensor.cpu().numpy()
+        w, h, _ = samples_np.shape
+        im = Image.fromarray(np.uint8(samples_np))
+        
+        # print(samples_np.shape)
+        _, regions = selectivesearch.selective_search(samples_np, scale=500, sigma=0.9, min_size=10)
+        region_list = []
+        for i in regions:
+            box = i['rect']
+            # a = ImageDraw.ImageDraw(im)
+            if box[2] * box[3] > w * h / 100:
+                region_list.append(list(box))
+                # a.rectangle(((box[0], box[1]), (box[0]+box[2], box[1]+box[3])), fill=None, outline='red', width=5)
+        region_ten = torch.tensor(region_list, dtype=targets[0]['boxes'].dtype)
+        region_ten[:, 2:] += region_ten[:, :2]
+        region_ten[:, 0::2].clamp_(min=0, max=w)
+        region_ten[:, 1::2].clamp_(min=0, max=h)
+        region_ten = region_ten / torch.tensor([w, h, w, h], dtype=torch.float32)
+        tgt_boxes = targets[0]['boxes'].cpu()
+        inter_box = jaccard(region_ten, tgt_boxes)
+        # print('inter_box', inter_box.size())
+        if inter_box.size(1) > 0:
+            inter_box = inter_box.max(-1)[0]
+            _, index = torch.topk(inter_box, k=10, largest=False)
+            region_ten = region_ten[index]
+            # im.save('./example' + str(count) + '.jpeg')
+            # count += 1
+            # print(regions[:10])
+            # print(targets)
+            region_ten = region_ten.to(targets[0]['boxes'].device)
+            # print(region_ten)
+            targets[0]['boxes'] = region_ten
+            labels = torch.full([10], 10)
+            labels = labels.to(targets[0]['labels'].device)
+            targets[0]['labels'] = labels
         outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
