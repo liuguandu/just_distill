@@ -353,9 +353,16 @@ class SetCriterion(nn.Module):
                 tgt_id = F.softmax(old_teacher_outputs['pred_logits'][i][mask[i]], -1).max(-1)[1]
                 logit_list.append(tgt_id)
                 boxes_list.append(old_teacher_outputs['pred_boxes'][i][mask[i]])
+            # logit_tensor = torch.tensor(logit_list).to(targets[0]['labels'].device)
+            # boxes_tensor = torch.tensor(boxes_list).to(targets[0]['labels'].device)
             if old_teacher_outputs['pred_logits'].size(1) > 0:
                 for i in range(len(logit_list)):
-                    if 
+                    if len(targets[i]['labels']) > 0:
+                        targets[i]['labels'] = torch.cat((targets[i]['labels'], logit_list[i]), 0)
+                        targets[i]['boxes'] = torch.cat((targets[i]['boxes'], boxes_list[i]), 0)
+                    else:
+                        targets[i]['labels'] = logit_list[i]
+                        targets[i]['boxes'] = boxes_list[i]
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
