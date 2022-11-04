@@ -68,10 +68,11 @@ def jaccard(box_a, box_b):
     union = area_a + area_b - inter
     return inter / union  # [A,B]
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
+def train_one_epoch(model: torch.nn.Module, teacher_model: torchcriterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
     model.train()
+    teacher_model.eval()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -85,49 +86,51 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     count = 0
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        with torch.no_grad():
+            old_teacher_outputs = teacher_model(samples)
         # print(samples)
-        samples_tensor, _ = samples.decompose()
-        # print(samples_tensor)
-        samples_tensor = samples_tensor.reshape(-1, samples_tensor.size(2), samples_tensor.size(3))
-        samples_tensor = samples_tensor.permute(1, 2, 0)
+        # samples_tensor, _ = samples.decompose()
+        # # print(samples_tensor)
+        # samples_tensor = samples_tensor.reshape(-1, samples_tensor.size(2), samples_tensor.size(3))
+        # samples_tensor = samples_tensor.permute(1, 2, 0)
         
-        samples_np = samples_tensor.cpu().numpy()
-        w, h, _ = samples_np.shape
-        im = Image.fromarray(np.uint8(samples_np))
+        # samples_np = samples_tensor.cpu().numpy()
+        # w, h, _ = samples_np.shape
+        # im = Image.fromarray(np.uint8(samples_np))
         
-        # print(samples_np.shape)
-        _, regions = selectivesearch.selective_search(samples_np, scale=500, sigma=0.9, min_size=10)
-        region_list = []
-        for i in regions:
-            box = i['rect']
-            # a = ImageDraw.ImageDraw(im)
-            if box[2] * box[3] > w * h / 100:
-                region_list.append(list(box))
-                # a.rectangle(((box[0], box[1]), (box[0]+box[2], box[1]+box[3])), fill=None, outline='red', width=5)
-        region_ten = torch.tensor(region_list, dtype=targets[0]['boxes'].dtype)
-        region_ten[:, 2:] += region_ten[:, :2]
-        region_ten[:, 0::2].clamp_(min=0, max=w)
-        region_ten[:, 1::2].clamp_(min=0, max=h)
-        region_ten = region_ten / torch.tensor([w, h, w, h], dtype=torch.float32)
-        tgt_boxes = targets[0]['boxes'].cpu()
-        inter_box = jaccard(region_ten, tgt_boxes)
-        # print('inter_box', inter_box.size())
-        if inter_box.size(1) > 0:
-            inter_box = inter_box.max(-1)[0]
-            _, index = torch.topk(inter_box, k=10, largest=False)
-            region_ten = region_ten[index]
-            # im.save('./example' + str(count) + '.jpeg')
-            # count += 1
-            # print(regions[:10])
-            # print(targets)
-            region_ten = region_ten.to(targets[0]['boxes'].device)
-            # print(region_ten)
-            targets[0]['boxes'] = region_ten
-            labels = torch.full([10], 10)
-            labels = labels.to(targets[0]['labels'].device)
-            targets[0]['labels'] = labels
+        # # print(samples_np.shape)
+        # _, regions = selectivesearch.selective_search(samples_np, scale=500, sigma=0.9, min_size=10)
+        # region_list = []
+        # for i in regions:
+        #     box = i['rect']
+        #     # a = ImageDraw.ImageDraw(im)
+        #     if box[2] * box[3] > w * h / 100:
+        #         region_list.append(list(box))
+        #         # a.rectangle(((box[0], box[1]), (box[0]+box[2], box[1]+box[3])), fill=None, outline='red', width=5)
+        # region_ten = torch.tensor(region_list, dtype=targets[0]['boxes'].dtype)
+        # region_ten[:, 2:] += region_ten[:, :2]
+        # region_ten[:, 0::2].clamp_(min=0, max=w)
+        # region_ten[:, 1::2].clamp_(min=0, max=h)
+        # region_ten = region_ten / torch.tensor([w, h, w, h], dtype=torch.float32)
+        # tgt_boxes = targets[0]['boxes'].cpu()
+        # inter_box = jaccard(region_ten, tgt_boxes)
+        # # print('inter_box', inter_box.size())
+        # if inter_box.size(1) > 0:
+        #     inter_box = inter_box.max(-1)[0]
+        #     _, index = torch.topk(inter_box, k=10, largest=False)
+        #     region_ten = region_ten[index]
+        #     # im.save('./example' + str(count) + '.jpeg')
+        #     # count += 1
+        #     # print(regions[:10])
+        #     # print(targets)
+        #     region_ten = region_ten.to(targets[0]['boxes'].device)
+        #     # print(region_ten)
+        #     targets[0]['boxes'] = region_ten
+        #     labels = torch.full([10], 10)
+        #     labels = labels.to(targets[0]['labels'].device)
+        #     targets[0]['labels'] = labels
         outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        loss_dict = criterion(outputs, targets, old_teacher_outputs=old_teacher_outputs)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 

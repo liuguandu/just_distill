@@ -329,13 +329,33 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, old_teacher_outputs=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
+        logit_list = []
+        boxes_list = []
+        if old_teacher_outputs != None:
+            org_teacher_outputs = copy.deepcopy(old_teacher_outputs)
+            pred = old_teacher_outputs['pred_logits']
+            pred = pred.softmax(-1).max(-1)[0]
+            # print('old_teacher_outputs1:', old_teacher_outputs['pred_logits'].size(), 'pred:', pred.size())
+            topk_index = torch.topk(pred, 10, 1)[1]
+            # print('topk_index:', topk_index.size())
+            topk_score = torch.topk(pred, 10, 1)[0]
+            mask = (topk_score > 0.6)
+            old_teacher_outputs['pred_logits'] = torch.gather(old_teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
+            old_teacher_outputs['pred_boxes'] = torch.gather(old_teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+            for i in range(len(mask)):
+                tgt_id = F.softmax(old_teacher_outputs['pred_logits'][i][mask[i]], -1).max(-1)[1]
+                logit_list.append(tgt_id)
+                boxes_list.append(old_teacher_outputs['pred_boxes'][i][mask[i]])
+            if old_teacher_outputs['pred_logits'].size(1) > 0:
+                for i in range(len(logit_list)):
+                    if 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets

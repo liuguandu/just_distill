@@ -121,6 +121,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
     # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
+    parser.add_argument('--resume_teacher', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
     parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_lat10_finetune2/checkpoint0050.pth', help='resume from checkpoint')
     
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
@@ -151,7 +152,11 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
+    teacher_model, _, _ = build_model(args)
+    teacher_model.to(device)
+
     model_without_ddp = model
+    teacher_without_ddp = teacher_model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
@@ -296,6 +301,8 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu])
+        teacher_model_without_ddp = teacher_model.module
     # base_ds = None
     if args.dataset_file == "coco_panoptic":
         # We also evaluate AP during panoptic training, on original coco DS
@@ -307,6 +314,7 @@ def main(args):
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
+        teacher_model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -319,7 +327,7 @@ def main(args):
         # for n, p in checkpoint['model'].named_parameters:
         #     print(n)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-
+        _, _ = teacher_model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
@@ -363,7 +371,7 @@ def main(args):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            model, teacher_model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
