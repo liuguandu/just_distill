@@ -3,6 +3,7 @@ pathes = ['/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/data/VOC2COCO/VOC
         '/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/data/VOC2COCO/VOC2007_trainval_lat10.json',
         '/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/data/VOC2COCO/VOC2007_trainval_pre10.json',
         '/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/data/VOC2COCO/VOC2007_trainval.json']
+
 for path in pathes:
     with open(path) as fp:
         json_data = json.load(fp)
