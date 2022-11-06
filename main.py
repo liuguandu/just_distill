@@ -35,7 +35,7 @@ def get_args_parser():
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--epochs', default=1, type=int)
+    parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
@@ -199,8 +199,8 @@ def main(args):
     for n, p in model_without_ddp.named_parameters():
         if p.requires_grad == True:
             org_list.append(n)
-        if 'transformer.decoder.class_embed' in n or 'input_proj' in n:
-            r_list.append(n)
+        # if 'transformer.decoder.class_embed' in n or 'input_proj' in n:
+        r_list.append(n)
         # for i in range(6):
         #     r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.weight')
         #     r_list.append('transformer.encoder.layers.'+str(i)+'.self_attn.attention_weights.bias')
@@ -323,11 +323,12 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
+            teacher_checkpoint = torch.load(args.resume_teacher, map_location='cpu')
         # print('checkpoint49:', checkpoint['model']['transformer.level_embed'])
         # for n, p in checkpoint['model'].named_parameters:
         #     print(n)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-        _, _ = teacher_model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        _, _ = teacher_model_without_ddp.load_state_dict(teacher_checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))

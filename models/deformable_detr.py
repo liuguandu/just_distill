@@ -31,7 +31,29 @@ import copy
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-
+def feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_feature_box, teacher_feature_cls):
+    one_stage_feature_cls = one_stage_feature_cls[:, :, 0].unsqueeze(-1)
+    teacher_feature_cls = teacher_feature_cls[:, :, 0].unsqueeze(-1)
+    one_stage_difference = one_stage_feature_cls - teacher_feature_cls
+    filters = torch.zeros(one_stage_feature_cls.size()).to(one_stage_feature_cls.device)
+    distill_difference = torch.max(one_stage_difference, filters)
+    cls_distill_loss = torch.mul(distill_difference, distill_difference)
+    cls_distill_loss = cls_distill_loss.mean()
+    l2_loss = nn.MSELoss(size_average=False, reduce=False)
+    bbox_threshold = 0.1
+    mask = (one_stage_difference > bbox_threshold)
+    mask = mask.reshape(mask.size(0), -1)
+    # print('mask:', mask.size(), 'one_stage_feature_box1:', one_stage_feature_box.size(), 'one_stage_feature_box:', one_stage_feature_box[mask].size())
+    # print('one_stage_feature_box:', one_stage_feature_box.size(), 'teacher_feature_box:', teacher_feature_box.size())
+    if one_stage_feature_box[mask].size(0) > 0:
+        box_distill_loss = l2_loss(one_stage_feature_box[mask].reshape(mask.size(0), -1, 4), teacher_feature_box[mask].reshape(mask.size(0), -1, 4))
+        box_distill_loss = box_distill_loss.sum(-1).mean()
+    else:
+        box_distill_loss = 0
+    final_distill_loss = cls_distill_loss + box_distill_loss
+    loss = {}
+    loss['loss_fea_distill'] = final_distill_loss
+    return loss
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
@@ -343,12 +365,12 @@ class SetCriterion(nn.Module):
             pred = old_teacher_outputs['pred_logits']
             pred = pred.softmax(-1).max(-1)[0]
             # print('old_teacher_outputs1:', old_teacher_outputs['pred_logits'].size(), 'pred:', pred.size())
-            topk_index = torch.topk(pred, 10, 1)[1]
-            # print('topk_index:', topk_index.size())
-            topk_score = torch.topk(pred, 10, 1)[0]
-            mask = (topk_score > 0.6)
-            old_teacher_outputs['pred_logits'] = torch.gather(old_teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
-            old_teacher_outputs['pred_boxes'] = torch.gather(old_teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
+            # topk_index = torch.topk(pred, 10, 1)[1]
+            # topk_score = torch.topk(pred, 10, 1)[0]
+            # mask = (topk_score > 0.6)
+            mask = pred > 0.6
+            # old_teacher_outputs['pred_logits'] = torch.gather(old_teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
+            # old_teacher_outputs['pred_boxes'] = torch.gather(old_teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
             for i in range(len(mask)):
                 tgt_id = F.softmax(old_teacher_outputs['pred_logits'][i][mask[i]], -1).max(-1)[1]
                 logit_list.append(tgt_id)
@@ -399,6 +421,15 @@ class SetCriterion(nn.Module):
 
         if 'enc_outputs' in outputs:
             enc_outputs = outputs['enc_outputs']
+            if old_teacher_outputs != None:
+                teacher_enc_outputs = old_teacher_outputs['enc_outputs']
+                stu_cls = enc_outputs['pred_logits']
+                stu_box = enc_outputs['pred_boxes']
+                tea_cls = teacher_enc_outputs['pred_logits'].detach()
+                tea_box = teacher_enc_outputs['pred_boxes'].detach()
+                l_dict = feature_distillation(stu_box, stu_cls, tea_box, tea_cls)
+                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                losses.update(l_dict)
             bin_targets = copy.deepcopy(targets)
             for bt in bin_targets:
                 bt['labels'] = torch.zeros_like(bt['labels'])
@@ -414,7 +445,7 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
-
+            
         return losses
 
 
@@ -494,6 +525,7 @@ def build(args):
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
+    weight_dict['loss_fea_distill'] = args.cls_loss_coef / 2
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
         weight_dict["loss_dice"] = args.dice_loss_coef
