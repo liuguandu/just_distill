@@ -122,7 +122,8 @@ def get_args_parser():
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
     # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
     parser.add_argument('--resume_teacher', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
-    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_lat10_finetune2/checkpoint0050.pth', help='resume from checkpoint')
+    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
+    # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_lat10_finetune2/checkpoint0050.pth', help='resume from checkpoint')
     
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
