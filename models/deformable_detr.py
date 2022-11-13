@@ -40,7 +40,7 @@ def feature_distillation(one_stage_feature_box, one_stage_feature_cls, teacher_f
     cls_distill_loss = torch.mul(distill_difference, distill_difference)
     cls_distill_loss = cls_distill_loss.mean()
     l2_loss = nn.MSELoss(size_average=False, reduce=False)
-    bbox_threshold = 0.1
+    bbox_threshold = 0.3
     mask = (one_stage_difference > bbox_threshold)
     mask = mask.reshape(mask.size(0), -1)
     # print('mask:', mask.size(), 'one_stage_feature_box1:', one_stage_feature_box.size(), 'one_stage_feature_box:', one_stage_feature_box[mask].size())
@@ -368,7 +368,7 @@ class SetCriterion(nn.Module):
             # topk_index = torch.topk(pred, 10, 1)[1]
             # topk_score = torch.topk(pred, 10, 1)[0]
             # mask = (topk_score > 0.6)
-            mask = pred > 0.6
+            mask = pred > 0.5
             # old_teacher_outputs['pred_logits'] = torch.gather(old_teacher_outputs['pred_logits'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 21))
             # old_teacher_outputs['pred_boxes'] = torch.gather(old_teacher_outputs['pred_boxes'], 1, topk_index.unsqueeze(-1).repeat(1, 1, 4))
             for i in range(len(mask)):
