@@ -235,9 +235,18 @@ class SetCriterion(nn.Module):
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+        mmid = src_logits[:, :, 10:].clone()
+        mmid = mmid.sum(-1)
+        src_logits_mid1 = src_logits.clone()
+        src_logits_mid1[:, :, 10] = mmid
+        # print('be_src_logits:', src_logits.size())
+        # src_logits_mid = src_logits_mid1[:, :, :11]
+        target_classes_onehot_mid = target_classes_onehot[:, :, :11]
+        # print('src_logits', src_logits.size(), 'target_classes_onehot', target_classes_onehot.size())
+        loss_ce = sigmoid_focal_loss(src_logits_mid1[:, :, :11], target_classes_onehot_mid, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
-
+        # print('idx', idx)
+        # print('src_logits_idx', src_logits[idx].size())
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
             losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
@@ -337,8 +346,8 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
-        print('targets:')
-        print(targets)
+        # print('targets:')
+        # print(targets)
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
 

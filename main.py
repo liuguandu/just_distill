@@ -35,7 +35,7 @@ def get_args_parser():
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--epochs', default=1, type=int)
+    parser.add_argument('--epochs', default=51, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
@@ -120,8 +120,8 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--resume', default='', help='resume from checkpoint')
-    # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
-    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_lat10_finetune2/checkpoint0050.pth', help='resume from checkpoint')
+    parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_pre10/checkpoint0049.pth', help='resume from checkpoint')
+    # parser.add_argument('--resume', default='/home/liuguandu/lldetr/lifelongdetr/Deformable-DETR/exps/voc2007_lat10_finetune2/checkpoint0050.pth', help='resume from checkpoint')
     
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
